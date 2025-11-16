@@ -221,11 +221,13 @@ class SQLiteStorage(StorageBackend):
                     WHERE session_id = ?
                     ORDER BY timestamp ASC
                 """
+                params = [session_id]
 
                 if limit:
-                    query += f" LIMIT {limit} OFFSET {offset}"
+                    query += " LIMIT ? OFFSET ?"
+                    params.extend([limit, offset])
 
-                cursor = conn.execute(query, (session_id,))
+                cursor = conn.execute(query, params)
 
                 messages = []
                 for row in cursor.fetchall():

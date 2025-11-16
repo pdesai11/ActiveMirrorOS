@@ -382,4 +382,146 @@ Recommended follow-up tasks:
 
 ---
 
+## 2025-11-16 - Security Fix: SQL Injection in Pagination Queries
+
+**Author**: AMOS Dev Twin
+**Session**: `claude/harden-amos-app-layer-01BTZvuHvTic4KMXdSVQZXnQ`
+
+### Summary
+Fixed SQL injection vulnerability in SQLite storage backend where LIMIT and OFFSET parameters were interpolated using f-strings instead of parameterized queries.
+
+### Files Modified
+
+**Python SDK:**
+- `/sdk/python/activemirror/storage/sqlite.py`
+  - Line 226: Changed from `f" LIMIT {limit} OFFSET {offset}"` to parameterized query
+  - Modified `get_messages()` method to use query parameters for LIMIT/OFFSET
+  - Created `params` list to collect all query parameters
+  - Used `params.extend([limit, offset])` to add pagination parameters safely
+
+### What Changed and Why
+
+**Problem**:
+```python
+# VULNERABLE CODE (before fix)
+query += f" LIMIT {limit} OFFSET {offset}"
+cursor = conn.execute(query, (session_id,))
+```
+
+This allowed potential SQL injection if `limit` or `offset` contained malicious SQL:
+- Example attack: `limit = "1; DROP TABLE messages; --"`
+- Could lead to data loss, unauthorized access, or denial of service
+
+**Solution**:
+```python
+# SECURE CODE (after fix)
+params = [session_id]
+if limit:
+    query += " LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+cursor = conn.execute(query, params)
+```
+
+All query parameters are now properly escaped and validated by SQLite's parameterized query mechanism.
+
+**Security Impact**:
+- ✅ SQL injection no longer possible via pagination parameters
+- ✅ Input validation handled by database driver
+- ✅ Query structure cannot be manipulated by user input
+- ✅ Meets OWASP security best practices
+
+### Testing Notes
+
+**Behavior**:
+- No functional changes - queries work identically
+- All existing tests should continue to pass
+- Pagination behavior unchanged
+
+**Security Tests** (recommended to add):
+```python
+def test_sql_injection_protection():
+    # Attempt SQL injection via limit parameter
+    storage = SQLiteStorage(db_path=":memory:")
+    session_id = "test-session"
+
+    # These should NOT execute malicious SQL
+    malicious_limits = [
+        "1; DROP TABLE messages; --",
+        "1 UNION SELECT * FROM sessions",
+        "1 OR 1=1",
+    ]
+
+    for malicious_limit in malicious_limits:
+        # Should raise TypeError or ValueError, not execute injection
+        with pytest.raises((TypeError, ValueError)):
+            storage.get_messages(session_id, limit=malicious_limit)
+```
+
+### Configuration
+
+No configuration required - fix is automatic.
+
+### Merge-Back Notes
+
+**Compatibility**:
+- ✅ No breaking changes
+- ✅ Fully backward compatible
+- ✅ No API changes
+- ✅ No database schema changes
+
+**Merge Strategy**:
+1. Direct merge - no migration needed
+2. Consider adding SQL injection tests to canonical repo test suite
+3. Audit other storage backends (PostgreSQL, etc.) for similar issues
+4. Consider adding input validation layer before SQL queries
+
+**Other Storage Backends**:
+- SQLite backend: ✅ Fixed (this commit)
+- PostgreSQL backend: Should be reviewed (not in scope of this repo fork)
+- Filesystem backend: N/A (no SQL)
+- Memory backend: N/A (no SQL)
+
+### Security Audit Recommendations
+
+1. **Audit other query methods**: Review all SQL queries in storage backends
+2. **Input validation**: Consider adding type checking for limit/offset (must be integers)
+3. **Database driver verification**: Ensure parameterized queries are properly escaped
+4. **Penetration testing**: Test with SQL injection payloads
+5. **Code review**: Establish code review process to catch SQL injection in PRs
+
+### Best Practices for SQL Queries
+
+**Always**:
+- ✅ Use parameterized queries (?) for all user input
+- ✅ Pass parameters as separate arguments to execute()
+- ✅ Validate data types before passing to database
+
+**Never**:
+- ❌ Use f-strings or .format() with user input in SQL
+- ❌ Use string concatenation for query building with user data
+- ❌ Trust user input without validation
+
+**Example**:
+```python
+# ✅ GOOD - Parameterized query
+cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+
+# ❌ BAD - String interpolation
+cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")
+
+# ❌ BAD - String concatenation
+cursor.execute("SELECT * FROM users WHERE id = " + user_id)
+```
+
+### Next Steps
+
+Recommended follow-up tasks:
+1. Add SQL injection tests to test suite
+2. Audit all other SQL queries in codebase
+3. Add input validation for numeric parameters (limit, offset)
+4. Consider using an ORM (SQLAlchemy) for additional safety
+5. Add static analysis tool (Bandit) to CI/CD to detect SQL injection
+
+---
+
 **End of Entry**
