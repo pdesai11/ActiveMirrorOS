@@ -50,6 +50,18 @@ class DialogueConfig:
 
 
 @dataclass
+class LoggingConfig:
+    """Logging configuration."""
+
+    level: str = "INFO"
+    format: str = "text"
+    log_file: Optional[str] = None
+    enable_console: bool = True
+    enable_audit: bool = True
+    enable_performance: bool = False
+
+
+@dataclass
 class Config:
     """
     Main ActiveMirror configuration.
@@ -61,6 +73,7 @@ class Config:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
     dialogue: DialogueConfig = field(default_factory=DialogueConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     debug: bool = False
 
     @classmethod
@@ -107,6 +120,7 @@ class Config:
             "memory": {},
             "identity": {},
             "dialogue": {},
+            "logging": {},
         }
 
         # Parse environment variables
@@ -139,12 +153,14 @@ class Config:
         memory_data = data.get("memory", {})
         identity_data = data.get("identity", {})
         dialogue_data = data.get("dialogue", {})
+        logging_data = data.get("logging", {})
 
         return cls(
             storage=StorageConfig(**storage_data),
             memory=MemoryConfig(**memory_data),
             identity=IdentityConfig(**identity_data),
             dialogue=DialogueConfig(**dialogue_data),
+            logging=LoggingConfig(**logging_data),
             debug=data.get("debug", False),
         )
 
@@ -189,6 +205,13 @@ class Config:
         if self.dialogue.engine not in ("lingos", "basic", "custom"):
             errors.append(f"Invalid dialogue engine: {self.dialogue.engine}")
 
+        # Validate logging
+        if self.logging.level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            errors.append(f"Invalid log level: {self.logging.level}")
+
+        if self.logging.format not in ("json", "text", "structured"):
+            errors.append(f"Invalid log format: {self.logging.format}")
+
         return errors
 
     def to_dict(self) -> Dict[str, Any]:
@@ -217,6 +240,14 @@ class Config:
                 "engine": self.dialogue.engine,
                 "mode": self.dialogue.mode,
                 "enable_meta_cognition": self.dialogue.enable_meta_cognition,
+            },
+            "logging": {
+                "level": self.logging.level,
+                "format": self.logging.format,
+                "log_file": self.logging.log_file,
+                "enable_console": self.logging.enable_console,
+                "enable_audit": self.logging.enable_audit,
+                "enable_performance": self.logging.enable_performance,
             },
             "debug": self.debug,
         }

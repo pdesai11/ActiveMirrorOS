@@ -8,6 +8,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { existsSync } from 'fs';
+import { getLogger } from './logger.js';
 
 export const VaultCategory = {
   GOALS: 'goals',
@@ -30,6 +31,9 @@ export class VaultMemory {
   constructor(options = {}) {
     this.vaultPath = options.vaultPath || './vault';
     this.algorithm = 'aes-256-gcm';
+
+    // Set up logging
+    this.logger = getLogger('vault_memory');
 
     // Derive or use encryption key
     if (options.encryptionKey) {
@@ -155,10 +159,30 @@ export class VaultMemory {
       };
 
       await this._saveIndex();
+
+      this.logger.audit({
+        action: 'vault_store',
+        resource: key,
+        status: 'success',
+        details: { metadata },
+      });
+
       return true;
     } catch (error) {
-      console.error(`Failed to store ${key}:`, error.message);
-      return false;
+      this.logger.error(
+        `Failed to store vault entry: ${key}`,
+        { key, error: error.message },
+        error
+      );
+      this.logger.audit({
+        action: 'vault_store',
+        resource: key,
+        status: 'failure',
+        details: { error: error.message },
+      });
+
+      // Re-raise exception instead of returning false
+      throw new Error(`Failed to store vault entry '${key}': ${error.message}`);
     }
   }
 
@@ -180,10 +204,30 @@ export class VaultMemory {
       const encrypted = await fs.readFile(entryFile);
       const decrypted = this._decrypt(encrypted);
       const entry = JSON.parse(decrypted);
+
+      this.logger.audit({
+        action: 'vault_retrieve',
+        resource: key,
+        status: 'success',
+      });
+      this.logger.debug(`Retrieved vault entry: ${key}`);
+
       return entry.value;
     } catch (error) {
-      console.error(`Failed to retrieve ${key}:`, error.message);
-      return null;
+      this.logger.error(
+        `Failed to retrieve vault entry: ${key}`,
+        { key, error: error.message },
+        error
+      );
+      this.logger.audit({
+        action: 'vault_retrieve',
+        resource: key,
+        status: 'failure',
+        details: { error: error.message },
+      });
+
+      // Re-raise exception instead of returning null
+      throw new Error(`Failed to retrieve vault entry '${key}': ${error.message}`);
     }
   }
 
@@ -202,10 +246,30 @@ export class VaultMemory {
       await fs.unlink(entryFile);
       delete this.index.entries[key];
       await this._saveIndex();
+
+      this.logger.audit({
+        action: 'vault_delete',
+        resource: key,
+        status: 'success',
+      });
+      this.logger.info(`Deleted vault entry: ${key}`);
+
       return true;
     } catch (error) {
-      console.error(`Failed to delete ${key}:`, error.message);
-      return false;
+      this.logger.error(
+        `Failed to delete vault entry: ${key}`,
+        { key, error: error.message },
+        error
+      );
+      this.logger.audit({
+        action: 'vault_delete',
+        resource: key,
+        status: 'failure',
+        details: { error: error.message },
+      });
+
+      // Re-raise exception instead of returning false
+      throw new Error(`Failed to delete vault entry '${key}': ${error.message}`);
     }
   }
 

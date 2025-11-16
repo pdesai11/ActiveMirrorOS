@@ -11,7 +11,14 @@ __api_version__ = "2.0.0"
 from activemirror.core.mirror import ActiveMirror
 from activemirror.core.session import Session
 from activemirror.core.message import Message, Response
-from activemirror.core.config import Config
+from activemirror.core.config import (
+    Config,
+    StorageConfig,
+    MemoryConfig,
+    IdentityConfig,
+    DialogueConfig,
+    LoggingConfig,
+)
 from activemirror.reflective_client import (
     ReflectiveClient,
     ReflectivePattern,
@@ -26,6 +33,13 @@ from activemirror.exceptions import (
     ContextOverflowError,
     ConfigurationError,
 )
+from activemirror.logging import (
+    AMOSLogger,
+    get_logger,
+    configure_logging,
+    LogLevel,
+    LogFormat,
+)
 
 __all__ = [
     # Main classes
@@ -33,7 +47,13 @@ __all__ = [
     "Session",
     "Message",
     "Response",
+    # Configuration
     "Config",
+    "StorageConfig",
+    "MemoryConfig",
+    "IdentityConfig",
+    "DialogueConfig",
+    "LoggingConfig",
     # Reflective components
     "ReflectiveClient",
     "ReflectivePattern",
@@ -48,6 +68,12 @@ __all__ = [
     "StorageError",
     "ContextOverflowError",
     "ConfigurationError",
+    # Logging
+    "AMOSLogger",
+    "get_logger",
+    "configure_logging",
+    "LogLevel",
+    "LogFormat",
     # Version info
     "__version__",
     "__api_version__",

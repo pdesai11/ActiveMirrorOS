@@ -14,6 +14,8 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+from activemirror.logging import get_logger
+
 
 class VaultMemory:
     """
@@ -39,6 +41,9 @@ class VaultMemory:
         """
         self.vault_path = Path(vault_path)
         self.vault_path.mkdir(parents=True, exist_ok=True)
+
+        # Set up logging
+        self.logger = get_logger("vault_memory")
 
         # Set up encryption
         if encryption_key:
@@ -132,11 +137,29 @@ class VaultMemory:
             }
             self._save_index()
 
+            self.logger.audit(
+                action="vault_store",
+                resource=key,
+                status="success",
+                details={"metadata": metadata or {}},
+            )
             return True
 
         except Exception as e:
-            print(f"Failed to store {key}: {e}")
-            return False
+            self.logger.error(
+                f"Failed to store vault entry: {key}",
+                context={"key": key, "error": str(e)},
+                exc_info=True,
+            )
+            self.logger.audit(
+                action="vault_store",
+                resource=key,
+                status="failure",
+                details={"error": str(e)},
+            )
+            # Re-raise exception instead of returning False
+            from activemirror.exceptions import StorageError
+            raise StorageError(f"Failed to store vault entry '{key}': {e}") from e
 
     def retrieve(self, key: str) -> Optional[Any]:
         """
@@ -156,11 +179,30 @@ class VaultMemory:
             encrypted_data = entry_file.read_bytes()
             decrypted_data = self.cipher.decrypt(encrypted_data)
             entry = json.loads(decrypted_data.decode())
+
+            self.logger.audit(
+                action="vault_retrieve",
+                resource=key,
+                status="success",
+            )
+            self.logger.debug(f"Retrieved vault entry: {key}")
             return entry["value"]
 
         except Exception as e:
-            print(f"Failed to retrieve {key}: {e}")
-            return None
+            self.logger.error(
+                f"Failed to retrieve vault entry: {key}",
+                context={"key": key, "error": str(e)},
+                exc_info=True,
+            )
+            self.logger.audit(
+                action="vault_retrieve",
+                resource=key,
+                status="failure",
+                details={"error": str(e)},
+            )
+            # Re-raise exception instead of returning None
+            from activemirror.exceptions import StorageError
+            raise StorageError(f"Failed to retrieve vault entry '{key}': {e}") from e
 
     def delete(self, key: str) -> bool:
         """Delete entry from vault."""
@@ -172,11 +214,30 @@ class VaultMemory:
             entry_file.unlink()
             del self.index["entries"][key]
             self._save_index()
+
+            self.logger.audit(
+                action="vault_delete",
+                resource=key,
+                status="success",
+            )
+            self.logger.info(f"Deleted vault entry: {key}")
             return True
 
         except Exception as e:
-            print(f"Failed to delete {key}: {e}")
-            return False
+            self.logger.error(
+                f"Failed to delete vault entry: {key}",
+                context={"key": key, "error": str(e)},
+                exc_info=True,
+            )
+            self.logger.audit(
+                action="vault_delete",
+                resource=key,
+                status="failure",
+                details={"error": str(e)},
+            )
+            # Re-raise exception instead of returning False
+            from activemirror.exceptions import StorageError
+            raise StorageError(f"Failed to delete vault entry '{key}': {e}") from e
 
     def list_entries(
         self,
