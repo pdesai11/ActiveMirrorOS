@@ -35,16 +35,12 @@ export class VaultMemory {
     // Set up logging
     this.logger = getLogger('vault_memory');
 
-    // Derive or use encryption key
-    if (options.encryptionKey) {
-      this.encryptionKey = Buffer.from(options.encryptionKey, 'hex');
-    } else if (options.password) {
-      this.encryptionKey = this._deriveKey(options.password);
-    } else {
-      // Generate random key for demo/testing
-      this.encryptionKey = crypto.randomBytes(32);
-    }
+    // Store password for initialization
+    this.password = options.password;
+    this.encryptionKeyHex = options.encryptionKey;
 
+    this.salt = null;
+    this.encryptionKey = null;
     this.index = null;
     this.initialized = false;
   }
@@ -57,15 +53,85 @@ export class VaultMemory {
       await fs.mkdir(this.vaultPath, { recursive: true });
     }
 
+    // Try to extract salt from existing vault
+    const indexPath = path.join(this.vaultPath, '.vault_index.enc');
+    if (existsSync(indexPath)) {
+      this.salt = await this._extractSalt();
+    }
+
+    // Set up encryption key
+    if (this.encryptionKeyHex) {
+      this.encryptionKey = Buffer.from(this.encryptionKeyHex, 'hex');
+      if (!this.salt) {
+        this.salt = crypto.randomBytes(16);
+      }
+    } else if (this.password) {
+      // Generate random salt for new vaults, or use existing salt
+      if (!this.salt) {
+        this.salt = crypto.randomBytes(16); // 128-bit random salt
+        this.logger.info('Generated new random salt for vault');
+        this.logger.security({
+          event: 'vault_created_with_random_salt',
+          severity: 'info',
+          context: { vaultPath: this.vaultPath },
+        });
+      }
+      this.encryptionKey = this._deriveKey(this.password, this.salt);
+    } else {
+      // Generate random key for demo/testing
+      this.encryptionKey = crypto.randomBytes(32);
+      if (!this.salt) {
+        this.salt = crypto.randomBytes(16);
+      }
+    }
+
     // Load or create index
     this.index = await this._loadIndex();
     this.initialized = true;
   }
 
-  _deriveKey(password, salt = 'activemirror_vault') {
+  /**
+   * Extract salt from existing vault index file
+   *
+   * @returns {Promise<Buffer|null>} Salt bytes if found, null otherwise
+   */
+  async _extractSalt() {
+    try {
+      const indexPath = path.join(this.vaultPath, '.vault_index.enc');
+      const rawData = await fs.readFile(indexPath);
+
+      if (rawData.length >= 16) {
+        const salt = rawData.slice(0, 16);
+        this.logger.debug('Extracted salt from existing vault');
+        return salt;
+      }
+    } catch (error) {
+      this.logger.warning('Failed to extract salt from vault index', {
+        error: error.message,
+      });
+    }
+    return null;
+  }
+
+  /**
+   * Derive encryption key from password using PBKDF2
+   *
+   * @param {string} password - User password
+   * @param {Buffer} salt - Random salt (must be unique per vault)
+   * @returns {Buffer} Encryption key
+   */
+  _deriveKey(password, salt) {
     return crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
   }
 
+  /**
+   * Load and decrypt vault index
+   *
+   * The index is stored as: [salt (16 bytes)][encrypted JSON data]
+   * If the vault doesn't exist yet, returns empty index.
+   *
+   * @returns {Promise<Object>} Vault index
+   */
   async _loadIndex() {
     const indexPath = path.join(this.vaultPath, '.vault_index.enc');
 
@@ -77,11 +143,29 @@ export class VaultMemory {
     }
 
     try {
-      const encryptedData = await fs.readFile(indexPath);
+      const rawData = await fs.readFile(indexPath);
+
+      // Skip salt (first 16 bytes), decrypt the rest
+      if (rawData.length < 16) {
+        this.logger.warning('Index file too small, treating as corrupted');
+        return {
+          entries: {},
+          createdAt: new Date().toISOString(),
+        };
+      }
+
+      const encryptedData = rawData.slice(16);
       const decrypted = this._decrypt(encryptedData);
+      this.logger.debug('Loaded and decrypted vault index');
       return JSON.parse(decrypted);
     } catch (error) {
-      // Index corrupted or wrong key
+      this.logger.error(
+        'Failed to load vault index (possibly wrong password or corrupted)',
+        { error: error.message },
+        error
+      );
+      // Index corrupted or wrong password
+      // Return empty index to allow vault to continue
       return {
         entries: {},
         createdAt: new Date().toISOString(),
@@ -89,11 +173,22 @@ export class VaultMemory {
     }
   }
 
+  /**
+   * Save vault index
+   *
+   * The index is stored as: [salt (16 bytes)][encrypted JSON data]
+   * This allows recovering the salt when reopening the vault.
+   */
   async _saveIndex() {
     const indexPath = path.join(this.vaultPath, '.vault_index.enc');
     const indexJson = JSON.stringify(this.index, null, 2);
     const encrypted = this._encrypt(indexJson);
-    await fs.writeFile(indexPath, encrypted);
+
+    // Prepend salt to encrypted data
+    const rawData = Buffer.concat([this.salt, encrypted]);
+    await fs.writeFile(indexPath, rawData);
+
+    this.logger.debug('Saved vault index with salt');
   }
 
   _encrypt(text) {

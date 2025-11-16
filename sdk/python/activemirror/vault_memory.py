@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 import base64
+import os
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -45,26 +46,72 @@ class VaultMemory:
         # Set up logging
         self.logger = get_logger("vault_memory")
 
+        # Index file (encrypted)
+        self.index_file = self.vault_path / ".vault_index.enc"
+
+        # Try to extract salt from existing vault
+        self.salt: Optional[bytes] = None
+        if self.index_file.exists():
+            self.salt = self._extract_salt()
+
         # Set up encryption
         if encryption_key:
             self.encryption_key = encryption_key.encode()
+            if self.salt is None:
+                self.salt = os.urandom(16)
         elif password:
-            self.encryption_key = self._derive_key(password)
+            # Generate random salt for new vaults, or use existing salt
+            if self.salt is None:
+                self.salt = os.urandom(16)  # 128-bit random salt
+                self.logger.info("Generated new random salt for vault")
+                self.logger.security(
+                    event="vault_created_with_random_salt",
+                    severity="info",
+                    context={"vault_path": str(self.vault_path)},
+                )
+            self.encryption_key = self._derive_key(password, self.salt)
         else:
             # Generate random key for demo/testing
             self.encryption_key = Fernet.generate_key()
+            if self.salt is None:
+                self.salt = os.urandom(16)
 
         self.cipher = Fernet(self.encryption_key)
 
-        # Index file (encrypted)
-        self.index_file = self.vault_path / ".vault_index.enc"
+        # Now load and decrypt the index
         self.index = self._load_index()
 
-    def _derive_key(self, password: str, salt: Optional[bytes] = None) -> bytes:
-        """Derive encryption key from password using PBKDF2."""
-        if salt is None:
-            salt = b'activemirror_vault'  # In production, use random salt
+    def _extract_salt(self) -> Optional[bytes]:
+        """
+        Extract salt from existing vault index file.
 
+        Returns:
+            Salt bytes if found, None otherwise
+        """
+        try:
+            raw_data = self.index_file.read_bytes()
+            if len(raw_data) >= 16:
+                salt = raw_data[:16]
+                self.logger.debug("Extracted salt from existing vault")
+                return salt
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to extract salt from vault index: {e}",
+                context={"error": str(e)},
+            )
+        return None
+
+    def _derive_key(self, password: str, salt: bytes) -> bytes:
+        """
+        Derive encryption key from password using PBKDF2.
+
+        Args:
+            password: User password
+            salt: Random salt (must be unique per vault)
+
+        Returns:
+            Base64-encoded Fernet key
+        """
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
@@ -75,23 +122,54 @@ class VaultMemory:
         return key
 
     def _load_index(self) -> Dict[str, Any]:
-        """Load vault index."""
+        """
+        Load and decrypt vault index.
+
+        The index is stored as: [salt (16 bytes)][encrypted JSON data]
+        If the vault doesn't exist yet, returns empty index.
+        """
         if not self.index_file.exists():
             return {"entries": {}, "created_at": datetime.now().isoformat()}
 
         try:
-            encrypted_data = self.index_file.read_bytes()
+            raw_data = self.index_file.read_bytes()
+
+            # Skip salt (first 16 bytes), decrypt the rest
+            if len(raw_data) < 16:
+                self.logger.warning("Index file too small, treating as corrupted")
+                return {"entries": {}, "created_at": datetime.now().isoformat()}
+
+            encrypted_data = raw_data[16:]
             decrypted_data = self.cipher.decrypt(encrypted_data)
-            return json.loads(decrypted_data.decode())
-        except Exception:
-            # Index corrupted or wrong key
+            index = json.loads(decrypted_data.decode())
+            self.logger.debug("Loaded and decrypted vault index")
+            return index
+
+        except Exception as e:
+            self.logger.error(
+                "Failed to load vault index (possibly wrong password or corrupted)",
+                context={"error": str(e)},
+                exc_info=True,
+            )
+            # Index corrupted or wrong password
+            # Return empty index to allow vault to continue
             return {"entries": {}, "created_at": datetime.now().isoformat()}
 
     def _save_index(self):
-        """Save vault index."""
+        """
+        Save vault index.
+
+        The index is stored as: [salt (16 bytes)][encrypted JSON data]
+        This allows recovering the salt when reopening the vault.
+        """
         index_json = json.dumps(self.index, indent=2)
         encrypted_data = self.cipher.encrypt(index_json.encode())
-        self.index_file.write_bytes(encrypted_data)
+
+        # Prepend salt to encrypted data
+        raw_data = self.salt + encrypted_data
+        self.index_file.write_bytes(raw_data)
+
+        self.logger.debug("Saved vault index with salt")
 
     def store(
         self,
